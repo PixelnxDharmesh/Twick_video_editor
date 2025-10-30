@@ -398,6 +398,7 @@ function CanvasArea({
                     border: "2px solid white"
                   }}
                 />
+            
                 <div
                   onMouseDown={(e) => onImageResizeMouseDown(e, image, 'sw')}
                   style={{

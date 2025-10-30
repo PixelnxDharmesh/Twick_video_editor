@@ -13,7 +13,7 @@ function ToolsSidebar({
   formatTime,
   currentTime,
   duration,
-  deleteSelected, // ✅ Combined delete function
+  deleteSelected, //  Combined delete function
   selectedId,
   trimStart,
   setTrimStart,
@@ -31,6 +31,7 @@ function ToolsSidebar({
 }) {
   
   // ✅ FIXED: Better selected type detection
+  
   const getSelectedType = () => {
     if (!selectedId) return null;
     

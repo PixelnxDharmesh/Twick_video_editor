@@ -1,35 +1,65 @@
-  // Updated exportVideo function for multiple videos
+// Alternative simple export function - Complete version
 export async function exportVideo({ videoRef, textOverlays, canvasOptions, processingInfo, imageOverlays = [], videoClips = [] }) {
-  // Agar multiple videos hain toh unhe combine karo
+  // Agar multiple videos hain toh warning show karo
   if (videoClips && videoClips.length > 1) {
-    return exportMultipleVideos({ videoClips, textOverlays, canvasOptions, imageOverlays });
+    console.warn("Multiple videos export currently supports only single video. Using first video only.");
   }
 
-  // Single video wala existing code
-  if (!videoRef.current) throw new Error("Video element not found");
+  return new Promise(async (resolve) => {
+    const video = videoRef.current;
+    if (!video) {
+      throw new Error("Video element not found");
+    }
 
-  const video = videoRef.current;
-  const canvas = document.createElement("canvas");
-  const ctx = canvas.getContext("2d");
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
 
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
+    // Canvas size set karo video ke dimensions pe
+    canvas.width = video.videoWidth || 1280;
+    canvas.height = video.videoHeight || 720;
 
-  const stream = canvas.captureStream(30);
-  const recorder = new MediaRecorder(stream, { mimeType: "video/webm" });
-  const chunks = [];
+    const stream = canvas.captureStream(30);
+    const recorder = new MediaRecorder(stream, { mimeType: "video/webm" });
+    const chunks = [];
 
-  return new Promise((resolve, reject) => {
-    recorder.ondataavailable = (e) => chunks.push(e.data);
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) {
+        chunks.push(e.data);
+      }
+    };
+
     recorder.onstop = () => {
       const blob = new Blob(chunks, { type: "video/webm" });
       const url = URL.createObjectURL(blob);
       resolve(url);
     };
-    recorder.onerror = (err) => reject(err);
 
-    recorder.start();
+    recorder.onerror = (error) => {
+      console.error("Recording error:", error);
+      resolve(null);
+    };
 
+    // Preload images
+    const imagePromises = imageOverlays.map(img => {
+      return new Promise((resolveImg) => {
+        const image = new Image();
+        image.crossOrigin = "anonymous";
+        image.onload = () => {
+          console.log("Image loaded successfully:", img.source);
+          resolveImg({ image, imgObj: img });
+        };
+        image.onerror = () => {
+          console.error("Failed to load image:", img.source);
+          resolveImg(null);
+        };
+        image.src = img.source;
+      });
+    });
+
+    const loadedImages = await Promise.all(imagePromises);
+    console.log("Loaded images:", loadedImages.filter(img => img !== null).length);
+
+    // Trim times set karo
     let startTime = 0;
     let endTime = video.duration;
 
@@ -37,242 +67,172 @@ export async function exportVideo({ videoRef, textOverlays, canvasOptions, proce
       if (processingInfo.type === 'trim') {
         startTime = processingInfo.start;
         endTime = processingInfo.end;
-      } else if (processingInfo.type === 'cut') {
-        if (processingInfo.segments.length > 0) {
-          startTime = processingInfo.segments[0].start;
-          endTime = processingInfo.segments[0].end;
-        }
+      } else if (processingInfo.type === 'cut' && processingInfo.segments.length > 0) {
+        startTime = processingInfo.segments[0].start;
+        endTime = processingInfo.segments[0].end;
       }
     }
 
+    recorder.start();
     video.currentTime = startTime;
-    video.play();
 
-    // Preload images
-    const imagePromises = imageOverlays.map(image => {
-      return new Promise((resolve) => {
-        const img = new Image();
-        img.crossOrigin = "anonymous";
-        img.onload = () => resolve(img);
-        img.onerror = () => resolve(null);
-        img.src = image.source;
-      });
+    // Wait for video to be ready
+    await new Promise(resolve => {
+      const onSeeked = () => {
+        video.removeEventListener('seeked', onSeeked);
+        resolve();
+      };
+      video.addEventListener('seeked', onSeeked);
     });
 
-    const draw = async () => {
-      if (!video.paused && !video.ended && video.currentTime <= endTime) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+    let isRecording = true;
 
-        // Apply flip/rotate from canvasOptions
+    const drawFrame = () => {
+      if (!isRecording) return;
+
+      try {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // Apply canvas transformations
         ctx.save();
-        if (canvasOptions?.flipHorizontal || canvasOptions?.flipVertical) {
-          ctx.translate(
-            canvasOptions.flipHorizontal ? canvas.width : 0,
-            canvasOptions.flipVertical ? canvas.height : 0
-          );
-          ctx.scale(
-            canvasOptions.flipHorizontal ? -1 : 1,
-            canvasOptions.flipVertical ? -1 : 1
-          );
+        
+        // Flip horizontal
+        if (canvasOptions?.flipHorizontal) {
+          ctx.translate(canvas.width, 0);
+          ctx.scale(-1, 1);
         }
+        
+        // Flip vertical
+        if (canvasOptions?.flipVertical) {
+          ctx.translate(0, canvas.height);
+          ctx.scale(1, -1);
+        }
+        
+        // Rotate
         if (canvasOptions?.rotate) {
           ctx.translate(canvas.width / 2, canvas.height / 2);
           ctx.rotate((canvasOptions.rotate * Math.PI) / 180);
           ctx.translate(-canvas.width / 2, -canvas.height / 2);
         }
 
+        // Draw video
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         ctx.restore();
-
-        // Draw image overlays
-        for (const image of imageOverlays) {
-          try {
-            const img = new Image();
-            img.crossOrigin = "anonymous";
-            await new Promise((resolve) => {
-              img.onload = resolve;
-              img.onerror = resolve;
-              img.src = image.source;
-            });
-            
-            if (img.complete && img.naturalWidth !== 0) {
+        
+        // Draw images
+        loadedImages.forEach((loadedImage) => {
+          if (loadedImage && loadedImage.image) {
+            try {
+              const { image, imgObj } = loadedImage;
+              const x = (imgObj.position.x / 100) * canvas.width - (imgObj.size.width / 2);
+              const y = (imgObj.position.y / 100) * canvas.height - (imgObj.size.height / 2);
+              
               ctx.save();
-              const imgX = (image.position.x / 100) * canvas.width - (image.size.width / 2);
-              const imgY = (image.position.y / 100) * canvas.height - (image.size.height / 2);
-              ctx.globalAlpha = image.opacity || 1;
-              ctx.drawImage(img, imgX, imgY, image.size.width, image.size.height);
+              ctx.globalAlpha = imgObj.opacity || 1;
+              ctx.drawImage(image, x, y, imgObj.size.width, imgObj.size.height);
               ctx.restore();
+            } catch (error) {
+              console.error("Error drawing image:", error);
             }
-          } catch (error) {
-            console.error("Error drawing image:", error);
           }
-        }
-
-        // Draw text overlays
-        textOverlays.forEach((o) => {
-          ctx.fillStyle = o.style.color;
-          ctx.font = `${o.style.fontSize || "24px"} ${o.style.fontFamily || "Arial"}`;
-          ctx.fillText(
-            o.text,
-            (o.position?.x || 50) * canvas.width / 100,
-            (o.position?.y || 50) * canvas.height / 100
-          );
+        });
+        
+        // Draw text
+        textOverlays.forEach(textObj => {
+          try {
+            ctx.save();
+            ctx.fillStyle = textObj.style.color || "#ffffff";
+            ctx.font = `${textObj.style.fontSize || "24px"} ${textObj.style.fontFamily || "Arial"}`;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            
+            const x = (textObj.position?.x || 50) / 100 * canvas.width;
+            const y = (textObj.position?.y || 50) / 100 * canvas.height;
+            
+            ctx.fillText(textObj.text, x, y);
+            ctx.restore();
+          } catch (error) {
+            console.error("Error drawing text:", error);
+          }
         });
 
-        requestAnimationFrame(draw);
-      } else if (video.currentTime >= endTime) {
+        // Check if video should continue
+        if (video.currentTime >= endTime || video.ended || video.paused) {
+          console.log("Stopping recording - video ended or reached end time");
+          isRecording = false;
+          if (recorder.state === "recording") {
+            recorder.stop();
+          }
+          return;
+        }
+
+        requestAnimationFrame(drawFrame);
+      } catch (error) {
+        console.error("Error in drawFrame:", error);
+        isRecording = false;
         if (recorder.state === "recording") {
           recorder.stop();
         }
-        video.pause();
       }
     };
 
-    Promise.all(imagePromises).then(() => {
-      draw();
-    });
-
-    video.onended = () => {
+    // Video events handle karo
+    video.addEventListener('ended', () => {
+      console.log("Video ended event");
+      isRecording = false;
       if (recorder.state === "recording") {
         recorder.stop();
       }
-      video.pause();
-    };
-  });
-}
+    });
 
-// IMPROVED: Function for multiple videos - continuous playback
-async function exportMultipleVideos({ videoClips, textOverlays, canvasOptions, imageOverlays }) {
-  const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d');
-  
-  // Load first video to get dimensions
-  const firstVideo = await loadVideo(videoClips[0].source);
-  canvas.width = firstVideo.videoWidth;
-  canvas.height = firstVideo.videoHeight;
-
-  const stream = canvas.captureStream(30);
-  const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
-  const chunks = [];
-
-  return new Promise(async (resolve, reject) => {
-    recorder.ondataavailable = (e) => chunks.push(e.data);
-    recorder.onstop = () => {
-      const blob = new Blob(chunks, { type: 'video/webm' });
-      const url = URL.createObjectURL(blob);
-      resolve(url);
-    };
-    recorder.onerror = (err) => reject(err);
-
-    recorder.start();
-
-    let currentClipIndex = 0;
-    let startTime = Date.now();
-    
-    const drawFrame = async () => {
-      if (currentClipIndex >= videoClips.length) {
+    video.addEventListener('error', (error) => {
+      console.error("Video error:", error);
+      isRecording = false;
+      if (recorder.state === "recording") {
         recorder.stop();
-        return;
       }
+    });
 
-      const clip = videoClips[currentClipIndex];
-      const video = await loadVideo(clip.source);
-      
-      const currentTime = (Date.now() - startTime) / 1000;
-      const clipCurrentTime = currentTime - clip.start;
-      
-      if (clipCurrentTime >= 0 && clipCurrentTime <= clip.duration) {
-        // Set video to correct time
-        video.currentTime = Math.min(clipCurrentTime, video.duration);
-        
-        // Wait for video to be ready
-        if (video.readyState >= 2) {
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-          
-          // Apply canvas transformations
-          ctx.save();
-          if (canvasOptions?.flipHorizontal || canvasOptions?.flipVertical) {
-            ctx.translate(
-              canvasOptions.flipHorizontal ? canvas.width : 0,
-              canvasOptions.flipVertical ? canvas.height : 0
-            );
-            ctx.scale(
-              canvasOptions.flipHorizontal ? -1 : 1,
-              canvasOptions.flipVertical ? -1 : 1
-            );
-          }
-          if (canvasOptions?.rotate) {
-            ctx.translate(canvas.width / 2, canvas.height / 2);
-            ctx.rotate((canvasOptions.rotate * Math.PI) / 180);
-            ctx.translate(-canvas.width / 2, -canvas.height / 2);
-          }
+    // Start video playback and drawing
+    try {
+      await video.play();
+      console.log("Video playback started");
+      drawFrame();
+    } catch (error) {
+      console.error("Failed to play video:", error);
+      // Phir bhi drawing start karo
+      drawFrame();
+    }
 
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          ctx.restore();
-
-          // Draw overlays
-          drawOverlays();
-        }
-        
-        requestAnimationFrame(drawFrame);
-      } else if (clipCurrentTime > clip.duration) {
-        // Move to next clip
-        currentClipIndex++;
-        if (currentClipIndex < videoClips.length) {
-          startTime = Date.now() - (videoClips[currentClipIndex].start * 1000);
-        }
-        requestAnimationFrame(drawFrame);
-      } else {
-        requestAnimationFrame(drawFrame);
+    // Safety timeout - agar 30 seconds se zyada ho jaye toh stop kar do
+    setTimeout(() => {
+      if (recorder.state === "recording") {
+        console.log("Safety timeout - stopping recording");
+        isRecording = false;
+        recorder.stop();
       }
-    };
-
-    const drawOverlays = () => {
-      // Draw image overlays
-      imageOverlays.forEach(image => {
-        try {
-          const img = new Image();
-          img.src = image.source;
-          if (img.complete) {
-            ctx.save();
-            const imgX = (image.position.x / 100) * canvas.width - (image.size.width / 2);
-            const imgY = (image.position.y / 100) * canvas.height - (image.size.height / 2);
-            ctx.globalAlpha = image.opacity || 1;
-            ctx.drawImage(img, imgX, imgY, image.size.width, image.size.height);
-            ctx.restore();
-          }
-        } catch (error) {
-          console.error("Error drawing image:", error);
-        }
-      });
-
-      // Draw text overlays
-      textOverlays.forEach((o) => {
-        ctx.fillStyle = o.style.color;
-        ctx.font = `${o.style.fontSize || "24px"} ${o.style.fontFamily || "Arial"}`;
-        ctx.fillText(
-          o.text,
-          (o.position?.x || 50) * canvas.width / 100,
-          (o.position?.y || 50) * canvas.height / 100
-        );
-      });
-    };
-
-    // Preload all videos first
-    const videoPromises = videoClips.map(clip => loadVideo(clip.source));
-    await Promise.all(videoPromises);
-    
-    drawFrame();
+    }, 30000);
   });
 }
 
-// Helper function to load video
-function loadVideo(src) {
-  return new Promise((resolve, reject) => {
-    const video = document.createElement('video');
-    video.crossOrigin = "anonymous";
-    video.src = src;
-    video.onloadeddata = () => resolve(video);
-    video.onerror = reject;
+// Fallback function for multiple videos (simple implementation)
+async function exportMultipleVideos({ videoClips, textOverlays, canvasOptions, imageOverlays }) {
+  console.warn("Multiple videos export using first video only in simple mode");
+  
+  // Temporary video element create karo
+  const tempVideo = document.createElement('video');
+  tempVideo.src = videoClips[0].source;
+  
+  await new Promise(resolve => {
+    tempVideo.onloadedmetadata = resolve;
+  });
+
+  const tempVideoRef = { current: tempVideo };
+  
+  return exportVideo({
+    videoRef: tempVideoRef,
+    textOverlays,
+    canvasOptions,
+    imageOverlays
   });
 }

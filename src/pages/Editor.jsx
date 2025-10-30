@@ -11,9 +11,7 @@ function Editor() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [videoSource, setVideoSource] = useState(
-    "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
-  );
+  const [videoSource, setVideoSource] = useState(0);
   const [activeTool, setActiveTool] = useState("select");
   const [mediaType, setMediaType] = useState("videos");
   const [canvasOptions, setCanvasOptions] = useState({
@@ -39,27 +37,27 @@ function Editor() {
   const [originalVideoSource, setOriginalVideoSource] = useState("");
   const [isTrimmed, setIsTrimmed] = useState(false);
 
-  // NEW: Cut states
+  // Cut states
   const [cutPoints, setCutPoints] = useState([]);
   const [isCut, setIsCut] = useState(false);
   const [cutSegments, setCutSegments] = useState([]);
 
-  // NEW: Multiple videos state - FIXED
+  // Multiple videos state - FIXED
   const [videoClips, setVideoClips] = useState([]);
   const [currentVideoIndex, setCurrentVideoIndex] = useState(0);
-  const [currentClipTime, setCurrentClipTime] = useState(0); // Track time within current clip
+  const [currentClipTime, setCurrentClipTime] = useState(0);
 
-  const videoRef = useRef(null);
-  const fileInputRef = useRef(null);
-
-  //image upload
+  // Image states
   const [imageOverlays, setImageOverlays] = useState([]);
   const [showImageUpload, setShowImageUpload] = useState(false);
   const [imageUrl, setImageUrl] = useState("");
 
+  const videoRef = useRef(null);
+  const fileInputRef = useRef(null);
+
   // Initialize video clips when video loads
   useEffect(() => {
-    if (duration > 0 && videoSource) {
+    if (duration > 0 && videoSource && videoClips.length === 0) {
       setVideoClips([{
         id: 'video-1',
         type: 'video',
@@ -81,9 +79,9 @@ function Editor() {
     return videoSource;
   };
 
-  // FIXED: Handle time update for multiple videos
+  // FIXED: Improved time update for multiple videos
   const handleTimeUpdate = () => {
-    if (videoRef.current && videoClips.length > 0) {
+    if (videoRef.current && videoClips.length > 0 && currentVideoIndex < videoClips.length) {
       const currentClip = videoClips[currentVideoIndex];
       if (!currentClip) return;
       
@@ -93,60 +91,73 @@ function Editor() {
       // Calculate global timeline time
       let globalTime = current;
       for (let i = 0; i < currentVideoIndex; i++) {
-        globalTime += videoClips[i].duration;
+        if (videoClips[i]) {
+          globalTime += videoClips[i].duration;
+        }
       }
       setCurrentTime(globalTime);
       
       // Check if current video has ended and switch to next video
-      if (current >= currentClip.duration && currentVideoIndex < videoClips.length - 1) {
+      if (current >= currentClip.duration - 0.1 && currentVideoIndex < videoClips.length - 1) {
+        console.log(`Switching from video ${currentVideoIndex + 1} to ${currentVideoIndex + 2}`);
+        
         // Switch to next video
         const nextIndex = currentVideoIndex + 1;
         setCurrentVideoIndex(nextIndex);
-        videoRef.current.currentTime = 0;
-        setCurrentClipTime(0);
         
-        // Load and play next video
+        // Reset time for next video
         setTimeout(() => {
           if (videoRef.current) {
+            videoRef.current.currentTime = 0;
+            setCurrentClipTime(0);
+            
+            // Load and play next video
             videoRef.current.load();
-            videoRef.current.play().catch(console.error);
+            setTimeout(() => {
+              if (videoRef.current && isPlaying) {
+                videoRef.current.play().catch(console.error);
+              }
+            }, 200);
           }
         }, 100);
-      }
-      
-      // If trimmed, loop within trim range
-      if (isTrimmed && current >= trimEnd) {
-        videoRef.current.currentTime = trimStart;
-        if (isPlaying) {
-          videoRef.current.play();
-        }
       }
     }
   };
 
-  // FIXED: Handle video end properly
+  // FIXED: Better video end handler
   const handleVideoEnd = () => {
+    console.log("Video ended, current index:", currentVideoIndex, "total clips:", videoClips.length);
+    
     if (currentVideoIndex < videoClips.length - 1) {
       // Switch to next video
       const nextIndex = currentVideoIndex + 1;
+      console.log(`Moving to next video: ${nextIndex + 1}`);
+      
       setCurrentVideoIndex(nextIndex);
-      setCurrentClipTime(0);
       
       setTimeout(() => {
         if (videoRef.current) {
           videoRef.current.currentTime = 0;
-          videoRef.current.play().catch(console.error);
+          setCurrentClipTime(0);
+          
+          // Load and play next video
+          videoRef.current.load();
+          setTimeout(() => {
+            if (videoRef.current && isPlaying) {
+              videoRef.current.play().catch(console.error);
+            }
+          }, 200);
         }
       }, 100);
     } else {
       // Last video ended
+      console.log("All videos ended");
       setIsPlaying(false);
-      setCurrentVideoIndex(0);
-      setCurrentClipTime(0);
+      // Don't reset to first video, stay on last video
     }
   };
 
-  // FIXED: Handle seek in timeline for multiple videos
+  // FIXED: Improved seek function for multiple videos
   const handleSeek = (globalTime) => {
     if (!videoRef.current || videoClips.length === 0) return;
     
@@ -165,24 +176,40 @@ function Editor() {
       accumulatedTime += clip.duration;
     }
     
+    // Ensure target time is within video bounds
+    if (videoClips[targetVideoIndex]) {
+      targetTimeInVideo = Math.max(0, Math.min(targetTimeInVideo, videoClips[targetVideoIndex].duration));
+    }
+    
+    console.log(`Seek: Global ${globalTime.toFixed(2)}s -> Video ${targetVideoIndex + 1} at ${targetTimeInVideo.toFixed(2)}s`);
+    
     // If switching to different video
     if (targetVideoIndex !== currentVideoIndex) {
+      console.log(`Switching to video ${targetVideoIndex + 1}`);
       setCurrentVideoIndex(targetVideoIndex);
+      
       setTimeout(() => {
         if (videoRef.current) {
           videoRef.current.currentTime = targetTimeInVideo;
-          if (isPlaying) {
-            videoRef.current.play().catch(console.error);
-          }
+          setCurrentClipTime(targetTimeInVideo);
+          
+          // Load the new video source
+          videoRef.current.load();
+          
+          setTimeout(() => {
+            if (videoRef.current && isPlaying) {
+              videoRef.current.play().catch(console.error);
+            }
+          }, 200);
         }
       }, 100);
     } else {
       // Same video, just seek
       videoRef.current.currentTime = targetTimeInVideo;
+      setCurrentClipTime(targetTimeInVideo);
     }
     
     setCurrentTime(globalTime);
-    setCurrentClipTime(targetTimeInVideo);
   };
 
   // Sample media data
@@ -299,15 +326,19 @@ function Editor() {
     }
   }, [videoSource]);
 
+  // FIXED: Toggle play for multiple videos
   const togglePlay = () => {
     if (videoRef.current) {
       if (isPlaying) {
         videoRef.current.pause();
       } else {
-        // If trimmed, start from trim start
-        if (isTrimmed && videoRef.current.currentTime < trimStart) {
-          videoRef.current.currentTime = trimStart;
+        // Ensure we're playing the current video from correct time
+        const currentClip = videoClips[currentVideoIndex];
+        if (currentClip && currentClipTime >= currentClip.duration) {
+          videoRef.current.currentTime = 0;
+          setCurrentClipTime(0);
         }
+        
         videoRef.current.play().catch(console.error);
       }
       setIsPlaying(!isPlaying);
@@ -556,7 +587,7 @@ function Editor() {
         <div className="editor-main">
           <CanvasArea
             videoRef={videoRef}
-            videoSource={getCurrentVideoSource()} // Dynamic source
+            videoSource={getCurrentVideoSource()}
             canvasOptions={canvasOptions}
             textOverlays={textOverlays}
             setTextOverlays={setTextOverlays}
@@ -564,7 +595,7 @@ function Editor() {
             setSelectedId={setSelectedId}
             handleTimeUpdate={handleTimeUpdate}
             handleLoadedMetadata={handleLoadedMetadata}
-            handleVideoEnd={handleVideoEnd} // Pass video end handler
+            handleVideoEnd={handleVideoEnd}
             processingInfo={getVideoProcessingInfo()}
             imageOverlays={imageOverlays}
             setImageOverlays={setImageOverlays}
@@ -621,7 +652,7 @@ function Editor() {
           <Timeline
             currentTime={currentTime}
             duration={duration}
-            setCurrentTime={handleSeek} // FIXED: Use handleSeek instead of setCurrentTime
+            setCurrentTime={handleSeek}
             videoRef={videoRef}
             videoSource={videoSource}
             textOverlays={textOverlays}
@@ -639,12 +670,11 @@ function Editor() {
             videoClips={videoClips}
             setVideoClips={setVideoClips}
           />
-
           <Controls
             isPlaying={isPlaying}
             togglePlay={togglePlay}
             videoRef={videoRef}
-            setCurrentTime={handleSeek} // FIXED: Use handleSeek
+            setCurrentTime={handleSeek}
             handleImport={handleImport}
             fileInputRef={fileInputRef}
             handleVideoUpload={handleVideoUpload}
